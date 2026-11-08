@@ -622,7 +622,7 @@ Ztring& Ztring::From_UTF16LE (const char* S, size_type Start, size_type Length)
 #if defined(ZENLIB_LOCAL_KEEPBYTES) || defined(ZENLIB_LOCAL_ICONV)
 //Encoding of the locale if it is neither ASCII nor UTF-8, else NULL, also used by OS_Utils.cpp
 //(Android has no other encoding, and no nl_langinfo() before API level 26)
-const char* Local_Other()
+ZENLIB_INTERNAL const char* Local_Other()
 {
     #if defined(__ANDROID__)
         return NULL;
@@ -785,13 +785,13 @@ static bool IsASCII(const std::wstring& S)
 }
 
 //UTF-8 with the bytes which are not valid kept, also used by OS_Utils.cpp
-void From_UTF8_KeepBytes(std::wstring& ToReturn, const char* S)
+ZENLIB_INTERNAL void From_UTF8_KeepBytes(std::wstring& ToReturn, const char* S)
 {
     ToReturn.clear();
     UTF8_Decode_KeepBytes(ToReturn, S, strlen(S));
 }
 
-std::string To_UTF8_KeepBytes(const std::wstring& S)
+ZENLIB_INTERNAL std::string To_UTF8_KeepBytes(const std::wstring& S)
 {
     std::string ToReturn;
     UTF8_Encode_KeepBytes(ToReturn, S.c_str(), S.size());
@@ -1047,7 +1047,7 @@ static bool Local_Iconv_Run_GB18030(const local_iconv& Iconv, void* Converter, c
 
 //Conversion of all the bytes from the encoding of the locale to UTF-8 or the reverse, false if iconv or the encoding is not available
 //or if a character can't be converted, also used by OS_Utils.cpp
-bool Local_Iconv_Convert(const char* S, size_t Size, std::string& ToReturn, bool ToUTF8, const char* CodeSet)
+ZENLIB_INTERNAL bool Local_Iconv_Convert(const char* S, size_t Size, std::string& ToReturn, bool ToUTF8, const char* CodeSet)
 {
     const local_iconv* Iconv=Local_Iconv();
     void* Converter=Iconv?Local_Iconv_Open(*Iconv, CodeSet, ToUTF8):NULL;

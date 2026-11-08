@@ -63,8 +63,8 @@ namespace ZenLib
         static inline const std::wstring& FileName_To_Wide(const Ztring &File_Name) {return File_Name;}
         static inline Ztring FileName_From_Wide(const wchar_t* File_Name) {return File_Name;}
     #else //UNICODE
-        std::wstring FileName_To_Wide(const Ztring &File_Name);
-        Ztring FileName_From_Wide(const wchar_t* File_Name);
+        ZENLIB_INTERNAL std::wstring FileName_To_Wide(const Ztring &File_Name);
+        ZENLIB_INTERNAL Ztring FileName_From_Wide(const wchar_t* File_Name);
     #endif //UNICODE
 #endif
 

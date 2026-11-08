@@ -280,13 +280,13 @@ void Shell_Execute(const Ztring &ToExecute)
 #if defined(ZENLIB_FILENAME_UTF8_WIDE) || defined(ZENLIB_FILENAME_UTF8_NARROW)
 //---------------------------------------------------------------------------
 //In Ztring.cpp
-const char* Local_Other();
+ZENLIB_INTERNAL const char* Local_Other();
 #if defined(ZENLIB_FILENAME_UTF8_WIDE)
-void From_UTF8_KeepBytes(std::wstring& ToReturn, const char* S);
-std::string To_UTF8_KeepBytes(const std::wstring& S);
+ZENLIB_INTERNAL void From_UTF8_KeepBytes(std::wstring& ToReturn, const char* S);
+ZENLIB_INTERNAL std::string To_UTF8_KeepBytes(const std::wstring& S);
 #endif
 #if defined(ZENLIB_FILENAME_UTF8_NARROW)
-bool Local_Iconv_Convert(const char* S, size_t Size, std::string& ToReturn, bool ToUTF8, const char* CodeSet);
+ZENLIB_INTERNAL bool Local_Iconv_Convert(const char* S, size_t Size, std::string& ToReturn, bool ToUTF8, const char* CodeSet);
 #endif
 
 //---------------------------------------------------------------------------
@@ -494,7 +494,7 @@ Ztring FileName_From_Native(const char* File_Name)
 //---------------------------------------------------------------------------
 //Names for the wide functions of Windows without Unicode, also used by File.cpp and Dir.cpp: UTF-8 text after FileName_Unicode_Set(),
 //else bytes of the code page of the file functions, as the narrow functions of the system
-std::wstring FileName_To_Wide(const Ztring &File_Name)
+ZENLIB_INTERNAL std::wstring FileName_To_Wide(const Ztring &File_Name)
 {
     #if defined(ZENLIB_FILENAME_UNICODE)
         if (FileName_IsUnicode)
@@ -511,7 +511,7 @@ std::wstring FileName_To_Wide(const Ztring &File_Name)
     return ToReturn;
 }
 
-Ztring FileName_From_Wide(const wchar_t* File_Name)
+ZENLIB_INTERNAL Ztring FileName_From_Wide(const wchar_t* File_Name)
 {
     #if defined(ZENLIB_FILENAME_UNICODE)
         if (FileName_IsUnicode)

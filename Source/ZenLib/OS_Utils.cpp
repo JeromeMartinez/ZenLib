@@ -47,9 +47,6 @@
 #include "ZenLib/OS_Utils.h"
 #if !defined(UNICODE) && !defined(ZENLIB_USEWX) && !defined(WINDOWS) && defined(__APPLE__)
     #include <cstring>
-    #include <iconv.h>
-    #include <langinfo.h>
-    #include <vector>
 #endif
 //---------------------------------------------------------------------------
 
@@ -270,15 +267,17 @@ void Shell_Execute(const Ztring &ToExecute)
 
 #ifdef ZENLIB_FILENAME_UTF8_NARROW
 //---------------------------------------------------------------------------
-// Encoding of the locale if it is neither ASCII nor UTF-8, else NULL
-static const char* FileName_Locale_Other()
+//In Ztring.cpp
+const char* Local_Other();
+bool Local_Iconv_Convert(const char* S, size_t Size, std::string& ToReturn, bool ToUTF8, const char* CodeSet);
+
+//---------------------------------------------------------------------------
+static bool FileName_IsASCII(const char* S)
 {
-    const char* CodeSet=nl_langinfo(CODESET);
-    if (!CodeSet || !*CodeSet
-     || !strcmp(CodeSet, "US-ASCII") || !strcmp(CodeSet, "ASCII") || !strcmp(CodeSet, "ANSI_X3.4-1968") || !strcmp(CodeSet, "646")
-     || !strcmp(CodeSet, "UTF-8") || !strcmp(CodeSet, "utf8"))
-        return NULL;
-    return CodeSet;
+    for (; *S; S++)
+        if ((unsigned char)*S>=0x80)
+            return false;
+    return true;
 }
 
 //---------------------------------------------------------------------------
@@ -313,52 +312,13 @@ static bool FileName_IsUTF8(const char* S)
 }
 
 //---------------------------------------------------------------------------
-// Name of an encoding of the locales for iconv, which does not know all of them, e.g. "eucJP" with macOS 14 and more
-static std::string FileName_Iconv_Name(const char* CodeSet)
+// Conversion with iconv of the system (all the bytes, without transliteration), empty if a character can't be converted
+static std::string FileName_Convert(const char* S, bool ToUTF8, const char* CodeSet)
 {
-    static const char* const Names[][2]=
-    {
-        {"eucJP", "EUC-JP"},
-        {"eucKR", "EUC-KR"},
-        {"eucCN", "EUC-CN"},
-        {"eucTW", "EUC-TW"},
-        {"SJIS", "SHIFT_JIS"},
-        {"Big5HKSCS", "BIG5-HKSCS"},
-    };
-    for (size_t i=0; i<sizeof(Names)/sizeof(*Names); i++)
-        if (!strcmp(CodeSet, Names[i][0]))
-            return Names[i][1];
-    if (!strncmp(CodeSet, "ISO8859-", 8))
-        return std::string("ISO-8859-")+(CodeSet+8);
-    return CodeSet;
-}
-
-//---------------------------------------------------------------------------
-static iconv_t FileName_Iconv_Open(const char* To, const char* From)
-{
-    iconv_t Converter=iconv_open(To, From);
-    if (Converter==(iconv_t)-1)
-        Converter=iconv_open(FileName_Iconv_Name(To).c_str(), FileName_Iconv_Name(From).c_str());
-    return Converter;
-}
-
-//---------------------------------------------------------------------------
-// Conversion with iconv (all the bytes, without transliteration), empty if a character can't be converted
-static std::string FileName_Convert(const char* From, const char* To, const char* S)
-{
-    iconv_t Converter=FileName_Iconv_Open(To, From);
-    if (Converter==(iconv_t)-1)
-        return std::string();
-    size_t In_Size=strlen(S);
-    std::vector<char> Out(In_Size*4+16); //UTF-8 and the locale encodings use at most 4 bytes per character, and shift sequences
-    char* In=(char*)S;
-    char* Out_Pos=&Out[0];
-    size_t Out_Size=Out.size();
-    bool OK=iconv(Converter, &In, &In_Size, &Out_Pos, &Out_Size)!=(size_t)-1 && iconv(Converter, NULL, NULL, &Out_Pos, &Out_Size)!=(size_t)-1;
-    iconv_close(Converter);
-    if (!OK || In_Size)
-        return std::string();
-    return std::string(&Out[0], Out_Pos-&Out[0]);
+    std::string ToReturn;
+    if (!Local_Iconv_Convert(S, strlen(S), ToReturn, ToUTF8, CodeSet))
+        ToReturn.clear();
+    return ToReturn;
 }
 #endif //ZENLIB_FILENAME_UTF8_NARROW
 
@@ -372,10 +332,10 @@ std::string FileName_To_Native(const Ztring &File_Name)
         return File_Name.To_UTF8();
     #elif defined(ZENLIB_FILENAME_UTF8_NARROW)
         //UTF-8 kept (e.g. a path from the Finder), else converted from the locale encoding (e.g. typed in a terminal using it)
-        const char* CodeSet=FileName_Locale_Other();
+        const char* CodeSet=Local_Other();
         if (!CodeSet || FileName_IsUTF8(File_Name.c_str()))
             return File_Name;
-        std::string ToReturn=FileName_Convert(CodeSet, "UTF-8", File_Name.c_str());
+        std::string ToReturn=FileName_Convert(File_Name.c_str(), true, CodeSet);
         return ToReturn.empty()?std::string(File_Name):ToReturn;
     #else
         return File_Name.To_Local();
@@ -392,11 +352,11 @@ Ztring FileName_From_Native(const char* File_Name)
             ToReturn.From_Local(File_Name); //Not UTF-8, e.g. typed in a terminal using the locale encoding
         return ToReturn;
     #elif defined(ZENLIB_FILENAME_UTF8_NARROW)
-        //In the locale encoding if it can encode it and gives back the same name, else the UTF-8 bytes
-        const char* CodeSet=FileName_Locale_Other();
-        if (!CodeSet)
+        //In the locale encoding if it can encode it and gives back the same name, else the UTF-8 bytes (ASCII as it is, without iconv)
+        const char* CodeSet=Local_Other();
+        if (!CodeSet || FileName_IsASCII(File_Name))
             return Ztring(File_Name);
-        std::string ToReturn=FileName_Convert("UTF-8", CodeSet, File_Name);
+        std::string ToReturn=FileName_Convert(File_Name, false, CodeSet);
         if (ToReturn.empty() || FileName_To_Native(ToReturn)!=File_Name)
             return Ztring(File_Name);
         return Ztring(ToReturn);

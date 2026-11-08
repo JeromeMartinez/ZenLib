@@ -54,10 +54,22 @@ using namespace std;
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
-//Text in the encoding of the locale on Unix-like systems, with Unicode (see From_Local())
-#if !defined(ZENLIB_USEWX) && !defined(WINDOWS) && defined(_UNICODE)
-    #define ZENLIB_LOCAL_KEEPBYTES
-    #include <climits>
+//Text in the encoding of the locale on Unix-like systems (see From_Local()):
+//bytes kept with Unicode, and iconv of the system where wchar_t is not Unicode
+//with some locales (e.g. macOS, FreeBSD) or if ZENLIB_ICONV is defined (e.g.
+//tests), also for the file names of macOS without Unicode (see OS_Utils.cpp)
+#if !defined(ZENLIB_USEWX) && !defined(WINDOWS)
+    #if defined(_UNICODE)
+        #define ZENLIB_LOCAL_KEEPBYTES
+        #include <climits>
+    #endif
+    #if (defined(_UNICODE) && (defined(ZENLIB_ICONV) || !(defined(__STDC_ISO_10646__) || defined(__GLIBC__) || defined(__linux__) || defined(__EMSCRIPTEN__)))) \
+     || (!defined(_UNICODE) && defined(__APPLE__))
+        #define ZENLIB_LOCAL_ICONV
+        #include <cerrno>
+        #include <dlfcn.h>
+        #include <string>
+    #endif
 #endif
 //---------------------------------------------------------------------------
 
@@ -632,10 +644,14 @@ Ztring& Ztring::From_UTF16LE (const char* S, size_type Start, size_type Length)
 //the encoding, e.g. of a Latin-1 file name with a UTF-8 locale, are kept as
 //U+DC80 to U+DCFF, which are not characters, so a name gives the same bytes
 //back, as Python does with "surrogateescape".
-#if defined(ZENLIB_LOCAL_KEEPBYTES)
-//Encoding of the locale if it is neither ASCII nor UTF-8, else NULL
+//Where wchar_t is not Unicode with some locales (e.g. EUC-JP, GB18030 or
+//ISO-8859-15 on macOS and FreeBSD), iconv of the system is used instead of the
+//C library, it is loaded at run time and only for a string which is not ASCII
+//with such a locale; if it is not available, the C library is used.
+#if defined(ZENLIB_LOCAL_KEEPBYTES) || defined(ZENLIB_LOCAL_ICONV)
+//Encoding of the locale if it is neither ASCII nor UTF-8, else NULL, also used by OS_Utils.cpp
 //(Android has no other encoding, and no nl_langinfo() before API level 26)
-static const char* Local_Other()
+const char* Local_Other()
 {
     #if defined(__ANDROID__)
         return NULL;
@@ -815,6 +831,325 @@ static void To_Local_C(const Ztring& S, std::string& ToReturn)
 }
 #endif //ZENLIB_LOCAL_KEEPBYTES
 
+#if defined(ZENLIB_LOCAL_ICONV)
+//Functions of iconv, found by name at run time: in the C library (e.g. FreeBSD, NetBSD, Solaris), libiconv of the system (macOS) or
+//GNU libiconv, whose names have a "lib" prefix; iconv_t is a pointer with all of them
+struct local_iconv
+{
+    void*   (*Open)(const char* ToCode, const char* FromCode);
+    size_t  (*Convert)(void* Converter, char** In, size_t* In_Size, char** Out, size_t* Out_Size);
+    int     (*Close)(void* Converter);
+};
+
+static bool Local_Iconv_Load(local_iconv& Iconv)
+{
+    static const char* const Libraries[]=
+    {
+        NULL, //Already in the program
+        #if defined(__APPLE__)
+            "/usr/lib/libiconv.2.dylib",
+        #endif
+        "libiconv.so.2",
+        "libiconv.so",
+    };
+    for (size_t Library_Pos=0; Library_Pos<sizeof(Libraries)/sizeof(*Libraries); Library_Pos++)
+    {
+        void* Library=Libraries[Library_Pos]?dlopen(Libraries[Library_Pos], RTLD_LAZY|RTLD_LOCAL):RTLD_DEFAULT; //RTLD_DEFAULT is NULL with glibc
+        if (Libraries[Library_Pos] && !Library)
+            continue;
+        for (int Prefix=0; Prefix<2; Prefix++)
+        {
+            Iconv.Open=(void* (*)(const char*, const char*))dlsym(Library, Prefix?"libiconv_open":"iconv_open");
+            Iconv.Convert=(size_t (*)(void*, char**, size_t*, char**, size_t*))dlsym(Library, Prefix?"libiconv":"iconv");
+            Iconv.Close=(int (*)(void*))dlsym(Library, Prefix?"libiconv_close":"iconv_close");
+            if (Iconv.Open && Iconv.Convert && Iconv.Close)
+                return true; //The library stays loaded
+        }
+        if (Libraries[Library_Pos])
+            dlclose(Library);
+    }
+    return false;
+}
+
+//iconv, NULL if it is not available (loaded once, thread-safe since C++11)
+static const local_iconv* Local_Iconv()
+{
+    static local_iconv Iconv;
+    static const bool IsLoaded=Local_Iconv_Load(Iconv);
+    return IsLoaded?&Iconv:NULL;
+}
+
+//Converter from the encoding of the locale to UTF-8 or the reverse, also with another name of the encoding if iconv does not know
+//the one of the locale (e.g. "eucJP" with macOS 14 and more), NULL if not possible
+static void* Local_Iconv_Open(const local_iconv& Iconv, const char* CodeSet, bool ToUTF8)
+{
+    void* Converter=ToUTF8?Iconv.Open("UTF-8", CodeSet):Iconv.Open(CodeSet, "UTF-8");
+    if (Converter!=(void*)-1)
+        return Converter;
+    static const char* const Names[][2]=
+    {
+        {"eucJP",     "EUC-JP"},
+        {"eucKR",     "EUC-KR"},
+        {"eucCN",     "EUC-CN"},
+        {"eucTW",     "EUC-TW"},
+        {"SJIS",      "SHIFT_JIS"},
+        {"Big5HKSCS", "BIG5-HKSCS"},
+    };
+    std::string Name;
+    for (size_t Pos=0; Pos<sizeof(Names)/sizeof(*Names); Pos++)
+        if (!strcmp(CodeSet, Names[Pos][0]))
+            Name=Names[Pos][1];
+    if (Name.empty() && !strncmp(CodeSet, "ISO8859-", 8))
+        Name=std::string("ISO-8859-")+(CodeSet+8);
+    if (Name.empty())
+        return NULL;
+    Converter=ToUTF8?Iconv.Open("UTF-8", Name.c_str()):Iconv.Open(Name.c_str(), "UTF-8");
+    return Converter==(void*)-1?NULL:Converter;
+}
+
+//Conversion of all the bytes with a converter, from its initial state, false if a character can't be converted or is converted to
+//another one (some implementations replace the characters which can't be converted)
+static bool Local_Iconv_Run(const local_iconv& Iconv, void* Converter, const char* S, size_t Size, std::string& ToReturn)
+{
+    ToReturn.clear();
+    Iconv.Convert(Converter, NULL, NULL, NULL, NULL);
+    char* In=(char*)S;
+    size_t In_Size=Size;
+    for (;;)
+    {
+        char Out[256];
+        char* Out_Pos=Out;
+        size_t Out_Size=sizeof(Out);
+        bool End=!In_Size; //Then the end of a shift sequence
+        size_t Result=End?Iconv.Convert(Converter, NULL, NULL, &Out_Pos, &Out_Size):Iconv.Convert(Converter, &In, &In_Size, &Out_Pos, &Out_Size);
+        int Error=errno;
+        ToReturn.append(Out, Out_Pos-Out);
+        if (Result==(size_t)-1)
+        {
+            if (Error!=E2BIG)
+                return false;
+        }
+        else if (Result)
+            return false;
+        else if (End)
+            return true;
+    }
+}
+
+//GB18030 encodes the characters after U+FFFF with 4 bytes from their value, iconv of some systems (e.g. macOS) does not know them
+static bool GB18030_Supplementary_Decode(const int8u* S, size_t Size, int32u& Value)
+{
+    if (Size<4 || S[0]<0x90 || S[0]>0xE3 || S[1]<0x30 || S[1]>0x39 || S[2]<0x81 || S[2]>0xFE || S[3]<0x30 || S[3]>0x39)
+        return false;
+    Value=0x10000+(((S[0]-0x90)*10+(S[1]-0x30))*126+(S[2]-0x81))*10+(S[3]-0x30);
+    return Value<=0x10FFFF;
+}
+
+static void GB18030_Supplementary_Encode(int32u Value, std::string& ToReturn)
+{
+    char Bytes[4];
+    Value-=0x10000;
+    Bytes[3]=(char)(0x30+Value%10);
+    Value/=10;
+    Bytes[2]=(char)(0x81+Value%126);
+    Value/=126;
+    Bytes[1]=(char)(0x30+Value%10);
+    Bytes[0]=(char)(0x90+Value/10);
+    ToReturn.append(Bytes, 4);
+}
+
+//Conversion of all the bytes from or to GB18030, the characters after U+FFFF without iconv and the other parts with it, false if a
+//character can't be converted
+static bool Local_Iconv_Run_GB18030(const local_iconv& Iconv, void* Converter, const char* S, size_t Size, std::string& ToReturn, bool ToUTF8)
+{
+    ToReturn.clear();
+    std::string Part;
+    size_t Start=0;
+    for (size_t Pos=0; Pos<Size;)
+    {
+        //Length of the character (a second byte from "0" to "9" is in a 4-byte character of GB18030), and its value if it is after U+FFFF
+        const int8u* Char=(const int8u*)S+Pos;
+        size_t Char_Size;
+        int32u Value=0;
+        if (ToUTF8)
+        {
+            Char_Size=*Char<0x80?1:((Pos+1<Size && Char[1]>=0x30 && Char[1]<=0x39)?4:2);
+            if (Char_Size==4 && !GB18030_Supplementary_Decode(Char, Size-Pos, Value))
+                Value=0;
+        }
+        else
+        {
+            Char_Size=UTF8_Char_Size(Char);
+            if (Char_Size==4)
+                Value=((Char[0]&0x07)<<18)|((Char[1]&0x3F)<<12)|((Char[2]&0x3F)<<6)|(Char[3]&0x3F);
+        }
+        if (!Char_Size || Char_Size>Size-Pos)
+            return false;
+        if (Value)
+        {
+            if (Pos>Start && !Local_Iconv_Run(Iconv, Converter, S+Start, Pos-Start, Part))
+                return false;
+            if (Pos>Start)
+                ToReturn+=Part;
+            if (ToUTF8)
+            {
+                ToReturn+=(char)(0xF0|(Value>>18));
+                ToReturn+=(char)(0x80|((Value>>12)&0x3F));
+                ToReturn+=(char)(0x80|((Value>>6)&0x3F));
+                ToReturn+=(char)(0x80|(Value&0x3F));
+            }
+            else
+                GB18030_Supplementary_Encode(Value, ToReturn);
+            Start=Pos+Char_Size;
+        }
+        Pos+=Char_Size;
+    }
+    if (Size>Start)
+    {
+        if (!Local_Iconv_Run(Iconv, Converter, S+Start, Size-Start, Part))
+            return false;
+        ToReturn+=Part;
+    }
+    return true;
+}
+
+//Conversion of all the bytes from the encoding of the locale to UTF-8 or the reverse, false if iconv or the encoding is not available
+//or if a character can't be converted, also used by OS_Utils.cpp
+bool Local_Iconv_Convert(const char* S, size_t Size, std::string& ToReturn, bool ToUTF8, const char* CodeSet)
+{
+    const local_iconv* Iconv=Local_Iconv();
+    void* Converter=Iconv?Local_Iconv_Open(*Iconv, CodeSet, ToUTF8):NULL;
+    if (!Converter)
+        return false;
+    bool IsConverted=Local_Iconv_Run(*Iconv, Converter, S, Size, ToReturn);
+    if (!IsConverted && !strcmp(CodeSet, "GB18030"))
+        IsConverted=Local_Iconv_Run_GB18030(*Iconv, Converter, S, Size, ToReturn, ToUTF8);
+    Iconv->Close(Converter);
+    return IsConverted;
+}
+#endif //ZENLIB_LOCAL_ICONV
+
+#if defined(ZENLIB_LOCAL_KEEPBYTES) && defined(ZENLIB_LOCAL_ICONV)
+//Character after U+FFFF, as a UTF-16 surrogate pair where wchar_t is 16-bit
+static void Append_Supplementary(Ztring& ToReturn, int32u Value)
+{
+    if (sizeof(wchar_t)==2)
+    {
+        ToReturn+=(wchar_t)(0xD800+((Value-0x10000)>>10));
+        ToReturn+=(wchar_t)(0xDC00+((Value-0x10000)&0x3FF));
+    }
+    else
+        ToReturn+=(wchar_t)Value;
+}
+
+//Encoding of the locale with iconv, false if it is not available: all the text at once if it gives the same bytes back, else character
+//per character with the length of the character from the C library (its wchar_t may not be Unicode), bytes which are not valid or
+//which don't give the same bytes back (e.g. a character with two encodings) kept
+static bool From_Local_Iconv(Ztring& ToReturn, const char* S, size_t Size, const char* CodeSet)
+{
+    const local_iconv* Iconv=Local_Iconv();
+    void* Decoder=Iconv?Local_Iconv_Open(*Iconv, CodeSet, true):NULL;
+    void* Encoder=Decoder?Local_Iconv_Open(*Iconv, CodeSet, false):NULL;
+    if (!Encoder)
+    {
+        if (Decoder)
+            Iconv->Close(Decoder);
+        return false;
+    }
+
+    std::string UTF8, Back;
+    if (Local_Iconv_Run(*Iconv, Decoder, S, Size, UTF8) && Local_Iconv_Run(*Iconv, Encoder, UTF8.data(), UTF8.size(), Back) && Back.size()==Size && !memcmp(Back.data(), S, Size))
+        ToReturn.From_UTF8(UTF8.c_str());
+    else
+    {
+        ToReturn.clear();
+        bool IsGB18030=!strcmp(CodeSet, "GB18030");
+        mbstate_t State;
+        memset(&State, 0, sizeof(State));
+        for (size_t Pos=0; Pos<Size;)
+        {
+            if ((int8u)S[Pos]<0x80)
+            {
+                ToReturn+=(wchar_t)S[Pos];
+                Pos++;
+                continue;
+            }
+            int32u Value;
+            if (IsGB18030 && GB18030_Supplementary_Decode((const int8u*)S+Pos, Size-Pos, Value))
+            {
+                Append_Supplementary(ToReturn, Value);
+                Pos+=4;
+                continue;
+            }
+            size_t Char_Size=mbrlen(S+Pos, Size-Pos, &State);
+            if (Char_Size && Char_Size<=Size-Pos
+             && Local_Iconv_Run(*Iconv, Decoder, S+Pos, Char_Size, UTF8) && !UTF8.empty()
+             && Local_Iconv_Run(*Iconv, Encoder, UTF8.data(), UTF8.size(), Back) && Back.size()==Char_Size && !memcmp(Back.data(), S+Pos, Char_Size))
+            {
+                ToReturn+=Ztring().From_UTF8(UTF8.c_str());
+                Pos+=Char_Size;
+                continue;
+            }
+            ToReturn+=(wchar_t)(0xDC00+(int8u)S[Pos]); //Then the initial state
+            Pos++;
+            memset(&State, 0, sizeof(State));
+        }
+    }
+
+    Iconv->Close(Encoder);
+    Iconv->Close(Decoder);
+    return true;
+}
+
+//Encoding of the locale with iconv, false if it is not available: the bytes kept by From_Local() back, "?" for the characters which
+//can't be encoded
+static bool To_Local_Iconv(const Ztring& S, std::string& ToReturn, const char* CodeSet)
+{
+    const local_iconv* Iconv=Local_Iconv();
+    void* Encoder=Iconv?Local_Iconv_Open(*Iconv, CodeSet, false):NULL;
+    if (!Encoder)
+        return false;
+
+    ToReturn.clear();
+    bool IsGB18030=!strcmp(CodeSet, "GB18030");
+    size_t Start=0;
+    for (size_t Pos=0; Pos<=S.size(); Pos++)
+    {
+        bool IsByte=Pos<S.size() && IsKeptByte(S, Pos);
+        if (Pos<S.size() && !IsByte)
+            continue;
+        if (Pos>Start)
+        {
+            //All the characters at once, else character per character
+            std::string UTF8=Ztring(S, Start, Pos-Start).To_UTF8(), Local;
+            if (Local_Iconv_Run(*Iconv, Encoder, UTF8.data(), UTF8.size(), Local))
+                ToReturn+=Local;
+            else
+                for (size_t UTF8_Pos=0; UTF8_Pos<UTF8.size();)
+                {
+                    const int8u* Char=(const int8u*)UTF8.c_str()+UTF8_Pos;
+                    size_t Char_Size=UTF8_Char_Size(Char);
+                    if (!Char_Size)
+                        Char_Size=1; //Not with To_UTF8()
+                    if (Local_Iconv_Run(*Iconv, Encoder, UTF8.data()+UTF8_Pos, Char_Size, Local))
+                        ToReturn+=Local;
+                    else if (IsGB18030 && Char_Size==4)
+                        GB18030_Supplementary_Encode(((Char[0]&0x07)<<18)|((Char[1]&0x3F)<<12)|((Char[2]&0x3F)<<6)|(Char[3]&0x3F), ToReturn);
+                    else
+                        ToReturn+='?';
+                    UTF8_Pos+=Char_Size;
+                }
+        }
+        if (IsByte)
+            ToReturn+=(char)(S[Pos]-0xDC00);
+        Start=Pos+1;
+    }
+
+    Iconv->Close(Encoder);
+    return true;
+}
+#endif //defined(ZENLIB_LOCAL_KEEPBYTES) && defined(ZENLIB_LOCAL_ICONV)
+
 Ztring& Ztring::From_Local (const char* S)
 {
     if (S==NULL)
@@ -839,7 +1174,7 @@ Ztring& Ztring::From_Local (const char* S)
                 else
                     clear();
             #else //WINDOWS
-                //ASCII: the same with all encodings, without the C library
+                //ASCII: the same with all encodings, without the C library or iconv
                 size_t Size=strlen(S);
                 if (IsASCII(S, Size))
                 {
@@ -850,6 +1185,10 @@ Ztring& Ztring::From_Local (const char* S)
                 const char* CodeSet=Local_Other();
                 if (!CodeSet)
                     return From_UTF8_KeepBytes(*this, S); //ASCII (UTF-8 instead) or UTF-8
+                #if defined(ZENLIB_LOCAL_ICONV)
+                    if (From_Local_Iconv(*this, S, Size, CodeSet))
+                        return *this;
+                #endif
                 From_Local_C(*this, S, Size);
             #endif
         #endif //ZENLIB_USEWX
@@ -1937,7 +2276,7 @@ std::string Ztring::To_Local () const
                 else
                     return std::string();
             #else //WINDOWS
-                //ASCII: the same with all encodings, without the C library
+                //ASCII: the same with all encodings, without the C library or iconv
                 if (IsASCII(*this))
                     return std::string(begin(), end());
 
@@ -1945,6 +2284,10 @@ std::string Ztring::To_Local () const
                 if (!CodeSet)
                     return To_UTF8_KeepBytes(*this); //ASCII (UTF-8 instead) or UTF-8
                 std::string ToReturn;
+                #if defined(ZENLIB_LOCAL_ICONV)
+                    if (To_Local_Iconv(*this, ToReturn, CodeSet))
+                        return ToReturn;
+                #endif
                 To_Local_C(*this, ToReturn); //All the bytes, there can be a 0 in a character (FreeBSD accepts the end of a string as second byte of an EUC character)
                 return ToReturn;
             #endif

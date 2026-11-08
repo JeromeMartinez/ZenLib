@@ -277,8 +277,8 @@ void Shell_Execute(const Ztring &ToExecute)
 //In Ztring.cpp
 const char* Local_Other();
 #if defined(ZENLIB_FILENAME_UTF8_WIDE)
-Ztring& From_UTF8_KeepBytes(Ztring& ToReturn, const char* S);
-std::string To_UTF8_KeepBytes(const Ztring& S);
+void From_UTF8_KeepBytes(std::wstring& ToReturn, const char* S);
+std::string To_UTF8_KeepBytes(const std::wstring& S);
 #else
 bool Local_Iconv_Convert(const char* S, size_t Size, std::string& ToReturn, bool ToUTF8, const char* CodeSet);
 #endif
@@ -416,7 +416,8 @@ Ztring FileName_From_Native(const char* File_Name)
         Ztring ToReturn;
         if (!FileName_IsUTF8(File_Name) && Local_Other())
             return ToReturn.From_Local(File_Name);
-        return From_UTF8_KeepBytes(ToReturn, File_Name);
+        From_UTF8_KeepBytes(ToReturn, File_Name);
+        return ToReturn;
     #elif defined(ZENLIB_FILENAME_UTF8_NARROW)
         //In the encoding of the locale if it can encode it and gives back the same name, else the bytes as they are
         const char* CodeSet=FileName_IsASCII(File_Name)?NULL:Local_Other();

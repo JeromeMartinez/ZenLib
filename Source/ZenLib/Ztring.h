@@ -221,7 +221,8 @@ public :
 
     //Conversions - To
     #ifndef WSTRING_MISSING
-        /// @brief Convert into Unicode chars
+        /// @brief Convert into Unicode chars (without Unicode: from UTF-8, the bytes which are not valid kept as U+DC80 to U+DCFF, and the
+        /// UTF-16 surrogates which are not in a pair, which From_Unicode() encodes as 3 bytes as in WTF-8)
         /// @return the string corresponding \n
     std::wstring To_Unicode () const;
     #endif //WSTRING_MISSING
@@ -363,6 +364,14 @@ public :
         /// @return The result of comparasion
     bool Compare (const Ztring &ToCompare, const Ztring &Comparator=__T("=="), ztring_t Options=Ztring_Nothing) const;
 };
+
+#ifndef WSTRING_MISSING
+//---------------------------------------------------------------------------
+/// @brief Conversions between Unicode and the encoding of the locale (code page on Windows), also without Unicode (e.g. for an API with
+/// wide strings): as From_Local() and To_Local() with Unicode, the bytes which are not valid kept as U+DC80 to U+DCFF on Unix-like systems
+std::wstring Unicode_From_Local (const char* S);
+std::string  Unicode_To_Local   (const std::wstring &S);
+#endif //WSTRING_MISSING
 
 } //NameSpace
 

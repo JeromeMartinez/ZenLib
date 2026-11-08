@@ -64,7 +64,7 @@ using namespace std;
         #include <climits>
     #endif
     #if (defined(_UNICODE) && (defined(ZENLIB_ICONV) || !(defined(__STDC_ISO_10646__) || defined(__GLIBC__) || defined(__linux__) || defined(__EMSCRIPTEN__)))) \
-     || (!defined(_UNICODE) && defined(__APPLE__))
+     || (!defined(_UNICODE) && (defined(__APPLE__) || defined(ZENLIB_FILENAME_UTF8)))
         #define ZENLIB_LOCAL_ICONV
         #include <cerrno>
         #include <dlfcn.h>
@@ -730,8 +730,8 @@ static bool IsKeptByte(const Ztring& S, size_t Pos)
     return S[Pos]>=0xDC80 && S[Pos]<=0xDCFF && (!Pos || (S[Pos-1]&0xFC00)!=0xD800);
 }
 
-//UTF-8 with the bytes which are not valid kept
-static Ztring& From_UTF8_KeepBytes(Ztring& ToReturn, const char* S)
+//UTF-8 with the bytes which are not valid kept, also used by OS_Utils.cpp
+Ztring& From_UTF8_KeepBytes(Ztring& ToReturn, const char* S)
 {
     ToReturn.clear();
     const char* Valid=S;
@@ -751,7 +751,7 @@ static Ztring& From_UTF8_KeepBytes(Ztring& ToReturn, const char* S)
     return ToReturn;
 }
 
-static std::string To_UTF8_KeepBytes(const Ztring& S)
+std::string To_UTF8_KeepBytes(const Ztring& S)
 {
     std::string ToReturn;
     size_t Valid=0;

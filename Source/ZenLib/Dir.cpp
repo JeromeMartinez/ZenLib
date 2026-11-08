@@ -57,6 +57,18 @@ namespace ZenLib
 {
 
 //---------------------------------------------------------------------------
+//Names for the wide functions of Windows, also without Unicode (see OS_Utils.cpp)
+#if defined(WINDOWS) && !defined(WINDOWS_UWP) && !defined(ZENLIB_USEWX)
+    #ifdef UNICODE
+        static inline const std::wstring& FileName_To_Wide(const Ztring &File_Name) {return File_Name;}
+        static inline Ztring FileName_From_Wide(const wchar_t* File_Name) {return File_Name;}
+    #else //UNICODE
+        std::wstring FileName_To_Wide(const Ztring &File_Name);
+        Ztring FileName_From_Wide(const wchar_t* File_Name);
+    #endif //UNICODE
+#endif
+
+//---------------------------------------------------------------------------
 // Pattern of the content of a directory, "\" and "/" are path separators on Windows
 // Without Unicode, the second byte of a character of a multibyte code page (e.g. "\" in cp932) is not a separator
 #if defined(WINDOWS) && !defined(WINDOWS_UWP)
@@ -284,20 +296,15 @@ ZtringList Dir::GetAllFileNames(const Ztring &Dir_Name_, dirlist_t Options)
                 Ztring Path=FileName::Path_Get(Dir_Name);
                 if (Path.empty())
                 {
-                    DWORD Path_Size=GetFullPathName(Dir_Name.c_str(), 0, NULL, NULL);
-                    Char* PathTemp=new Char[Path_Size+1];
-                    if (GetFullPathName(Dir_Name.c_str(), Path_Size+1, PathTemp, NULL))
-                        Path=FileName::Path_Get(PathTemp);
+                    DWORD Path_Size=GetFullPathNameW(FileName_To_Wide(Dir_Name).c_str(), 0, NULL, NULL);
+                    wchar_t* PathTemp=new wchar_t[Path_Size+1];
+                    if (GetFullPathNameW(FileName_To_Wide(Dir_Name).c_str(), Path_Size+1, PathTemp, NULL))
+                        Path=FileName::Path_Get(FileName_From_Wide(PathTemp));
                     delete [] PathTemp;
                 }
 
-                #ifdef UNICODE
-                    WIN32_FIND_DATAW FindFileDataW;
-                    HANDLE hFind=FindFirstFileW(Dir_Name.c_str(), &FindFileDataW);
-                #else
-                    WIN32_FIND_DATA FindFileData;
-                    HANDLE hFind=FindFirstFile(Dir_Name.c_str(), &FindFileData);
-                #endif //UNICODE
+                WIN32_FIND_DATAW FindFileDataW;
+                HANDLE hFind=FindFirstFileW(FileName_To_Wide(Dir_Name).c_str(), &FindFileDataW);
 
                 if (hFind==INVALID_HANDLE_VALUE)
                 {
@@ -310,26 +317,14 @@ ZtringList Dir::GetAllFileNames(const Ztring &Dir_Name_, dirlist_t Options)
                 BOOL ReturnValue;
                 do
                 {
-                    #ifdef UNICODE
-                        Ztring File_Name(FindFileDataW.cFileName);
-                    #else
-                        Ztring File_Name(FindFileData.cFileName);
-                    #endif //UNICODE
+                    Ztring File_Name=FileName_From_Wide(FindFileDataW.cFileName);
                     if (File_Name!=__T(".") && File_Name!=__T("..")) //Avoid . an ..
                     {
                         if (!(Options&Include_Hidden) && ((!File_Name.empty() && File_Name[0]==__T('.')) ||
-                        #ifdef UNICODE
                             (FindFileDataW.dwFileAttributes&FILE_ATTRIBUTE_HIDDEN)
-                        #else
-                            (FindFileData.dwFileAttributes&FILE_ATTRIBUTE_HIDDEN)
-                        #endif //UNICODE
                         ))
                         {
-                            #ifdef UNICODE
                             ReturnValue=FindNextFileW(hFind, &FindFileDataW);
-                            #else
-                            ReturnValue=FindNextFile(hFind, &FindFileData);
-                            #endif //UNICODE
                             continue;
                         }
 
@@ -344,11 +339,7 @@ ZtringList Dir::GetAllFileNames(const Ztring &Dir_Name_, dirlist_t Options)
                         else if (Options&Include_Files)
                             ToReturn.push_back(File_Name_Complete); //A file
                     }
-                    #ifdef UNICODE
-                        ReturnValue=FindNextFileW(hFind, &FindFileDataW);
-                    #else
-                        ReturnValue=FindNextFile(hFind, &FindFileData);
-                    #endif //UNICODE
+                    ReturnValue=FindNextFileW(hFind, &FindFileDataW);
                 }
                 while (ReturnValue);
 
@@ -482,11 +473,7 @@ bool Dir::Exists(const Ztring &File_Name)
 
                 return false;
             #else
-                #ifdef UNICODE
-                    DWORD FileAttributes=GetFileAttributesW(File_Name.c_str());
-                #else
-                    DWORD FileAttributes=GetFileAttributes(File_Name.c_str());
-                #endif //UNICODE
+                DWORD FileAttributes=GetFileAttributesW(FileName_To_Wide(File_Name).c_str());
 
                 ZENLIB_DEBUG2(   "Dir Exists",
                                     Debug+=", returns "; Debug +=Ztring::ToZtring(((FileAttributes!=INVALID_FILE_ATTRIBUTES) && (FileAttributes&FILE_ATTRIBUTE_DIRECTORY))?1:0).To_UTF8())
@@ -545,11 +532,7 @@ bool Dir::Create(const Ztring &File_Name)
 
                 return true;
             #else
-                #ifdef UNICODE
-                    return CreateDirectoryW(File_Name.c_str(), NULL)!=0;
-                #else
-                    return CreateDirectory(File_Name.c_str(), NULL)!=0;
-                #endif //UNICODE
+                return CreateDirectoryW(FileName_To_Wide(File_Name).c_str(), NULL)!=0;
             #endif
         #else //WINDOWS
             return mkdir(FileName_To_Native(File_Name).c_str(), 0700)==0;
@@ -569,11 +552,7 @@ public:
     Ztring Path;
     Dir::dirlist_t Options;
     HANDLE hFind;
-    #ifdef UNICODE
-        WIN32_FIND_DATAW FindFileDataW{};
-    #else
-        WIN32_FIND_DATA FindFileData{};
-    #endif //UNICODE
+    WIN32_FIND_DATAW FindFileDataW{};
 
     GetAllFileNames_Private()
         : Options(), hFind(INVALID_HANDLE_VALUE)
@@ -612,10 +591,10 @@ void GetAllFileNames::Start  (const Ztring &Dir_Name_, Dir::dirlist_t Options_)
         p->Path=FileName::Path_Get(p->Dir_Name);
         if (p->Path.empty())
         {
-            DWORD Path_Size=GetFullPathName(p->Dir_Name.c_str(), 0, NULL, NULL);
-            Char* PathTemp=new Char[Path_Size+1];
-            if (GetFullPathName(p->Dir_Name.c_str(), Path_Size+1, PathTemp, NULL))
-                p->Path=FileName::Path_Get(PathTemp);
+            DWORD Path_Size=GetFullPathNameW(FileName_To_Wide(p->Dir_Name).c_str(), 0, NULL, NULL);
+            wchar_t* PathTemp=new wchar_t[Path_Size+1];
+            if (GetFullPathNameW(FileName_To_Wide(p->Dir_Name).c_str(), Path_Size+1, PathTemp, NULL))
+                p->Path=FileName::Path_Get(FileName_From_Wide(PathTemp));
             delete [] PathTemp;
         }
     #else //WINDOWS
@@ -638,11 +617,7 @@ bool GetAllFileNames::Next (Ztring& Name)
         {
             if (p->hFind==INVALID_HANDLE_VALUE)
             {
-                #ifdef UNICODE
-                    p->hFind=FindFirstFileW(p->Dir_Name.c_str(), &p->FindFileDataW);
-                #else
-                    p->hFind=FindFirstFile(p->Dir_Name.c_str(), &p->FindFileData);
-                #endif //UNICODE
+                p->hFind=FindFirstFileW(FileName_To_Wide(p->Dir_Name).c_str(), &p->FindFileDataW);
 
                 if (p->hFind==INVALID_HANDLE_VALUE)
                     break;
@@ -650,28 +625,16 @@ bool GetAllFileNames::Next (Ztring& Name)
             else
             {
                 BOOL ReturnValue;
-                #ifdef UNICODE
-                    ReturnValue=FindNextFileW(p->hFind, &p->FindFileDataW);
-                #else
-                    ReturnValue=FindNextFile(p->hFind, &p->FindFileData);
-                #endif //UNICODE
+                ReturnValue=FindNextFileW(p->hFind, &p->FindFileDataW);
                 if (!ReturnValue)
                     break;
             }
 
-            #ifdef UNICODE
-                Ztring File_Name(p->FindFileDataW.cFileName);
-            #else
-                Ztring File_Name(p->FindFileData.cFileName);
-            #endif //UNICODE
+            Ztring File_Name=FileName_From_Wide(p->FindFileDataW.cFileName);
             if (File_Name!=__T(".") && File_Name!=__T("..")) //Avoid . an ..
             {
                 bool IsOk=false;
-                #ifdef UNICODE
-                    if (p->FindFileDataW.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)
-                #else
-                    if (p->FindFileData.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)
-                #endif //UNICODE
+                if (p->FindFileDataW.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)
                 {
                     if (p->Options&Dir::Include_Dirs)
                         IsOk=true; //A dir

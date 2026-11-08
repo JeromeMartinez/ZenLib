@@ -41,6 +41,10 @@ void Shell_Execute(const Ztring &ToExecute);
 
 std::string FileName_To_Native(const Ztring &File_Name);
 Ztring FileName_From_Native(const char* File_Name);
+/// @brief Without Unicode, file names as UTF-8 text (e.g. from an API with wide strings) instead of the bytes of the names (code page on
+/// Windows), converted by FileName_To_Native() and FileName_From_Native() as with Unicode and with all the characters in the file functions
+/// of Windows, for all the process; no effect with Unicode
+void FileName_Unicode_Set(bool Value=true);
 
 //***************************************************************************
 // Directorues

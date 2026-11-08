@@ -45,9 +45,13 @@
     #endif
 #endif //ZENLIB_USEWX
 #include "ZenLib/OS_Utils.h"
-//File names are UTF-8 whatever the locale on macOS and Android, also on other systems if ZENLIB_FILENAME_UTF8 is defined (e.g. tests)
+//File names are UTF-8 whatever the locale on macOS and Android, also on other systems if ZENLIB_FILENAME_UTF8 is defined (e.g. tests):
+//names as Unicode (also without Unicode, see FileName_Unicode_Set()), and the bytes of the names without Unicode
+#if !defined(ZENLIB_USEWX) && !defined(WSTRING_MISSING)
+    #define ZENLIB_FILENAME_UNICODE //Names as Unicode: with Unicode, and without Unicode after FileName_Unicode_Set()
+#endif
 #if !defined(ZENLIB_USEWX) && !defined(WINDOWS)
-    #if defined(UNICODE) && (defined(__APPLE__) || defined(__ANDROID__) || defined(ZENLIB_FILENAME_UTF8))
+    #if defined(__APPLE__) || defined(__ANDROID__) || defined(ZENLIB_FILENAME_UTF8)
         #define ZENLIB_FILENAME_UTF8_WIDE
     #endif
     #if !defined(UNICODE) && (defined(__APPLE__) || defined(ZENLIB_FILENAME_UTF8))
@@ -271,7 +275,8 @@ void Shell_Execute(const Ztring &ToExecute)
 //the locale is ASCII, and the bytes which are not valid in it are kept.
 //Without Unicode, strings are the bytes of the locale encoding: on macOS,
 //where file names are UTF-8, they are converted with iconv when the locale
-//is neither ASCII nor UTF-8 (Android has no other locale).
+//is neither ASCII nor UTF-8 (Android has no other locale); or, after
+//FileName_Unicode_Set(), they are UTF-8 text converted as with Unicode.
 #if defined(ZENLIB_FILENAME_UTF8_WIDE) || defined(ZENLIB_FILENAME_UTF8_NARROW)
 //---------------------------------------------------------------------------
 //In Ztring.cpp
@@ -279,7 +284,8 @@ const char* Local_Other();
 #if defined(ZENLIB_FILENAME_UTF8_WIDE)
 void From_UTF8_KeepBytes(std::wstring& ToReturn, const char* S);
 std::string To_UTF8_KeepBytes(const std::wstring& S);
-#else
+#endif
+#if defined(ZENLIB_FILENAME_UTF8_NARROW)
 bool Local_Iconv_Convert(const char* S, size_t Size, std::string& ToReturn, bool ToUTF8, const char* CodeSet);
 #endif
 
@@ -374,8 +380,10 @@ static std::string FileName_Existing(std::vector<std::string> Names)
 }
 #endif //ZENLIB_FILENAME_EXISTING
 
+#if defined(ZENLIB_FILENAME_UNICODE)
 //---------------------------------------------------------------------------
-std::string FileName_To_Native(const Ztring &File_Name)
+//Names as Unicode: with Unicode, and without Unicode after FileName_Unicode_Set() (on Windows, the code page as with Unicode)
+static std::string FileName_To_Native_Unicode(const std::wstring &File_Name)
 {
     #if defined(ZENLIB_FILENAME_UTF8_WIDE)
         std::string ToReturn=To_UTF8_KeepBytes(File_Name);
@@ -385,52 +393,141 @@ std::string FileName_To_Native(const Ztring &File_Name)
                 //Also in the encoding of the locale, the name or its UTF-8 bytes (e.g. typed in a terminal using it, see FileName_From_Native())
                 std::vector<std::string> Names;
                 Names.push_back(ToReturn);
-                Names.push_back(To_UTF8_KeepBytes(Ztring().From_Local(ToReturn.c_str())));
-                Names.push_back(File_Name.To_Local());
+                Names.push_back(To_UTF8_KeepBytes(Unicode_From_Local(ToReturn.c_str())));
+                Names.push_back(Unicode_To_Local(File_Name));
                 ToReturn=FileName_Existing(Names);
             }
         #endif
         return ToReturn;
-    #elif defined(ZENLIB_FILENAME_UTF8_NARROW)
-        //UTF-8 kept (e.g. a path from the Finder), else converted from the encoding of the locale (e.g. typed in a terminal using it), and the
-        //other one if a part of the path exists only with it (e.g. a name in this encoding which is valid UTF-8, or the bytes of a network volume)
-        const char* CodeSet=FileName_IsASCII(File_Name)?NULL:Local_Other();
-        std::string Converted;
-        if (!CodeSet || !Local_Iconv_Convert(File_Name.c_str(), File_Name.size(), Converted, true, CodeSet))
-            return File_Name;
-        std::vector<std::string> Names;
-        bool IsUTF8=FileName_IsUTF8(File_Name.c_str());
-        Names.push_back(IsUTF8?std::string(File_Name):Converted);
-        Names.push_back(IsUTF8?Converted:std::string(File_Name));
-        return FileName_Existing(Names);
     #else
+        return Unicode_To_Local(File_Name);
+    #endif
+}
+
+static std::wstring FileName_From_Native_Unicode(const char* File_Name)
+{
+    #if defined(ZENLIB_FILENAME_UTF8_WIDE)
+        //UTF-8, else with a locale which is neither ASCII nor UTF-8 its encoding (e.g. typed in a terminal using it), bytes which are not valid kept
+        if (!FileName_IsUTF8(File_Name) && Local_Other())
+            return Unicode_From_Local(File_Name);
+        std::wstring ToReturn;
+        From_UTF8_KeepBytes(ToReturn, File_Name);
+        return ToReturn;
+    #else
+        return Unicode_From_Local(File_Name);
+    #endif
+}
+#endif
+
+#if defined(ZENLIB_FILENAME_UNICODE) && !defined(UNICODE)
+static bool FileName_IsUnicode=false; //See FileName_Unicode_Set()
+#endif
+
+//---------------------------------------------------------------------------
+void FileName_Unicode_Set(bool Value)
+{
+    #if defined(ZENLIB_FILENAME_UNICODE) && !defined(UNICODE)
+        FileName_IsUnicode=Value;
+    #else
+        (void)Value; //Names as Unicode, or without wide strings
+    #endif
+}
+
+//---------------------------------------------------------------------------
+std::string FileName_To_Native(const Ztring &File_Name)
+{
+    #if defined(ZENLIB_USEWX)
         return File_Name.To_Local();
+    #elif defined(UNICODE)
+        return FileName_To_Native_Unicode(File_Name);
+    #else
+        #if defined(ZENLIB_FILENAME_UNICODE)
+            if (FileName_IsUnicode)
+                return FileName_To_Native_Unicode(File_Name.To_Unicode());
+        #endif
+        #if defined(ZENLIB_FILENAME_UTF8_NARROW)
+            //UTF-8 kept (e.g. a path from the Finder), else converted from the encoding of the locale (e.g. typed in a terminal using it), and the
+            //other one if a part of the path exists only with it (e.g. a name in this encoding which is valid UTF-8, or the bytes of a network volume)
+            const char* CodeSet=FileName_IsASCII(File_Name)?NULL:Local_Other();
+            std::string Converted;
+            if (!CodeSet || !Local_Iconv_Convert(File_Name.c_str(), File_Name.size(), Converted, true, CodeSet))
+                return File_Name;
+            std::vector<std::string> Names;
+            bool IsUTF8=FileName_IsUTF8(File_Name.c_str());
+            Names.push_back(IsUTF8?std::string(File_Name):Converted);
+            Names.push_back(IsUTF8?Converted:std::string(File_Name));
+            return FileName_Existing(Names);
+        #else
+            return File_Name.To_Local();
+        #endif
     #endif
 }
 
 //---------------------------------------------------------------------------
 Ztring FileName_From_Native(const char* File_Name)
 {
-    #if defined(ZENLIB_FILENAME_UTF8_WIDE)
-        //UTF-8, else with a locale which is neither ASCII nor UTF-8 its encoding (e.g. typed in a terminal using it), bytes which are not valid kept
-        Ztring ToReturn;
-        if (!FileName_IsUTF8(File_Name) && Local_Other())
-            return ToReturn.From_Local(File_Name);
-        From_UTF8_KeepBytes(ToReturn, File_Name);
-        return ToReturn;
-    #elif defined(ZENLIB_FILENAME_UTF8_NARROW)
-        //In the encoding of the locale if it can encode it and gives back the same name, else the bytes as they are
-        const char* CodeSet=FileName_IsASCII(File_Name)?NULL:Local_Other();
-        std::string ToReturn, Back;
-        if (!CodeSet || !FileName_IsUTF8(File_Name)
-         || !Local_Iconv_Convert(File_Name, strlen(File_Name), ToReturn, false, CodeSet)
-         || !Local_Iconv_Convert(ToReturn.c_str(), ToReturn.size(), Back, true, CodeSet) || Back!=File_Name)
-            return Ztring(File_Name);
-        return Ztring(ToReturn);
-    #else
+    #if defined(ZENLIB_USEWX)
         return Ztring().From_Local(File_Name);
+    #elif defined(UNICODE)
+        return FileName_From_Native_Unicode(File_Name);
+    #else
+        #if defined(ZENLIB_FILENAME_UNICODE)
+            if (FileName_IsUnicode)
+                return Ztring().From_Unicode(FileName_From_Native_Unicode(File_Name)); //The bytes which are not valid kept as they are
+        #endif
+        #if defined(ZENLIB_FILENAME_UTF8_NARROW)
+            //In the encoding of the locale if it can encode it and gives back the same name, else the bytes as they are
+            const char* CodeSet=FileName_IsASCII(File_Name)?NULL:Local_Other();
+            std::string ToReturn, Back;
+            if (!CodeSet || !FileName_IsUTF8(File_Name)
+             || !Local_Iconv_Convert(File_Name, strlen(File_Name), ToReturn, false, CodeSet)
+             || !Local_Iconv_Convert(ToReturn.c_str(), ToReturn.size(), Back, true, CodeSet) || Back!=File_Name)
+                return Ztring(File_Name);
+            return Ztring(ToReturn);
+        #else
+            return Ztring().From_Local(File_Name);
+        #endif
     #endif
 }
+
+#if defined(WINDOWS) && !defined(ZENLIB_USEWX) && !defined(UNICODE)
+//---------------------------------------------------------------------------
+//Names for the wide functions of Windows without Unicode, also used by File.cpp and Dir.cpp: UTF-8 text after FileName_Unicode_Set(),
+//else bytes of the code page of the file functions, as the narrow functions of the system
+std::wstring FileName_To_Wide(const Ztring &File_Name)
+{
+    #if defined(ZENLIB_FILENAME_UNICODE)
+        if (FileName_IsUnicode)
+            return File_Name.To_Unicode();
+    #endif
+    UINT CodePage=AreFileApisANSI()?CP_ACP:CP_OEMCP;
+    int Size=MultiByteToWideChar(CodePage, 0, File_Name.c_str(), -1, NULL, 0);
+    if (Size<=0)
+        return std::wstring();
+    wchar_t* WideString=new wchar_t[Size];
+    MultiByteToWideChar(CodePage, 0, File_Name.c_str(), -1, WideString, Size);
+    std::wstring ToReturn(WideString);
+    delete[] WideString;
+    return ToReturn;
+}
+
+Ztring FileName_From_Wide(const wchar_t* File_Name)
+{
+    #if defined(ZENLIB_FILENAME_UNICODE)
+        if (FileName_IsUnicode)
+            return Ztring().From_Unicode(File_Name);
+    #endif
+    UINT CodePage=AreFileApisANSI()?CP_ACP:CP_OEMCP;
+    int Size=WideCharToMultiByte(CodePage, 0, File_Name, -1, NULL, 0, NULL, NULL);
+    if (Size<=0)
+        return Ztring();
+    char* AnsiString=new char[Size];
+    WideCharToMultiByte(CodePage, 0, File_Name, -1, AnsiString, Size, NULL, NULL);
+    Ztring ToReturn(AnsiString);
+    delete[] AnsiString;
+    return ToReturn;
+}
+#endif
 
 //***************************************************************************
 // Directories

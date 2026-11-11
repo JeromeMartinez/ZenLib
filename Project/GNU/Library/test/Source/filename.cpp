@@ -970,6 +970,23 @@ int main(int argc, char* argv[])
         }
     }
 
+    // Name as the system gives it (e.g. an argument of main()), given to the system as it is with all the locales, also next to the name of the
+    // same characters in another encoding (names which are not valid UTF-8 can't be created on macOS and Windows)
+    for (size_t i=0; i<=Names_Size; i++)
+    {
+        std::string Name=i<Names_Size?Names[i]:Name_Latin1;
+        std::string Path=Directory+"/native_"+Name;
+        if (!Create_Raw(Path, 1+i))
+            continue;
+        File F;
+        #if defined(_WIN32)
+            bool Opened=F.Open_Native(To_Wide(Path).c_str());
+        #else
+            bool Opened=F.Open_Native(Path.c_str());
+        #endif
+        Check(Opened && F.Size_Get()==1+i && !F.Modified_Get().empty() && !F.File_Name.empty(), "File::Open_Native("+Printable(Name)+")", Opened?"another file, no modification date or no text":"file not opened");
+    }
+
     // Directory listing with names which can't be decoded, or not to a name which can be opened: it must end, with existing files only
     std::string List_Path=Directory+"/list";
     std::string SubDirectory=std::string("sub_")+Names[0];

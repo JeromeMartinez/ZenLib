@@ -23,6 +23,15 @@
 namespace ZenLib
 {
 
+//---------------------------------------------------------------------------
+/// @brief Character of a file name as the system gives it (e.g. the arguments
+///        of main() or wmain()): UTF-16 on Windows, else bytes in any encoding
+#if defined(WINDOWS)
+    typedef wchar_t NativeChar;
+#else //defined(WINDOWS)
+    typedef char NativeChar;
+#endif //defined(WINDOWS)
+
 //***************************************************************************
 /// @brief File manipulation
 //***************************************************************************
@@ -57,6 +66,10 @@ public :
 
     //Open/close
     bool Open  (const tstring &File_Name, access_t Access=Access_Read);
+    /// @brief Open a file with its name as the system gives it: this name is
+    ///        given to the system as it is, not converted from a Ztring, so
+    ///        whatever its encoding and the locale (File_Name gets its text)
+    bool Open_Native (const NativeChar* File_Name, access_t Access=Access_Read);
     bool Create(const ZenLib::Ztring &File_Name, bool OverWrite=true);
     void Close ();
 

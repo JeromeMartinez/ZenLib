@@ -190,6 +190,53 @@ namespace ZenLib
     #define ZENLIB_DEBUG2(_NAME,_TOAPPEND)
 #endif // ZENLIB_DEBUG
 
+//---------------------------------------------------------------------------
+//Stream with the name given to the system: the functions which take a name (e.g. stat()) get the same one, also when the file was opened
+//with its name as the system gives it (Open_Native())
+#ifdef ZENLIB_STANDARD
+namespace
+{
+    class File_Stream : public fstream
+    {
+    public :
+        File_Stream(const std::string &Name_, ios_base::openmode Mode) : fstream(Name_.c_str(), Mode), Name(Name_) {}
+        const std::string Name;
+    };
+}
+
+static const char* File_Stream_Name(void* File_Handle)
+{
+    return static_cast<File_Stream*>((fstream*)File_Handle)->Name.c_str();
+}
+
+static bool Open_Stream(File &F, const std::string &Name, File::access_t Access)
+{
+    ios_base::openmode mode;
+    switch (Access)
+    {
+        case File::Access_Write        : mode=ios_base::binary|ios_base::in|ios_base::out; break;
+        case File::Access_Read_Write   : mode=ios_base::binary|ios_base::in|ios_base::out; break;
+        case File::Access_Write_Append : {
+                                         struct stat Stat;
+                                         if (stat(Name.c_str(), &Stat) || !S_ISREG(Stat.st_mode))
+                                            mode=ios_base::binary|ios_base::out;
+                                         else
+                                            mode=ios_base::binary|ios_base::out|ios_base::app;
+                                         }
+                                         break;
+        default                        : mode = ios_base::binary | ios_base::in;
+    }
+    File_Stream* Stream=new File_Stream(Name, mode);
+    if (!Stream->is_open())
+    {
+        delete Stream;
+        return false;
+    }
+    F.File_Handle=(fstream*)Stream;
+    return true;
+}
+#endif //ZENLIB_STANDARD
+
 //***************************************************************************
 // Constructor/Destructor
 //***************************************************************************
@@ -280,25 +327,7 @@ bool File::Open (const tstring &File_Name_, access_t Access)
             File_Handle=open(FileName_To_Native(File_Name).c_str(), access);
             return File_Handle!=-1;
             */
-            ios_base::openmode mode;
-            switch (Access)
-            {
-                case Access_Write        : mode=ios_base::binary|ios_base::in|ios_base::out; break;
-                case Access_Read_Write   : mode=ios_base::binary|ios_base::in|ios_base::out; break;
-                case Access_Write_Append : if (!Exists(File_Name))
-                                                mode=ios_base::binary|ios_base::out;
-                                           else
-                                                mode=ios_base::binary|ios_base::out|ios_base::app;
-                                           break;
-                default                  : mode = ios_base::binary | ios_base::in;
-            }
-            File_Handle=new fstream(FileName_To_Native(File_Name).c_str(), mode);
-            if (!((fstream*)File_Handle)->is_open())
-            {
-                delete (fstream*)File_Handle; File_Handle=NULL;
-                return false;
-            }
-            return true;
+            return Open_Stream(*this, FileName_To_Native(File_Name), Access);
         #elif defined WINDOWS
             #ifdef WINDOWS_UWP
                 File_Handle=new WrtFile();
@@ -428,6 +457,33 @@ bool File::Open (const tstring &File_Name_, access_t Access)
 }
 
 //---------------------------------------------------------------------------
+bool File::Open_Native (const NativeChar* File_Name_, access_t Access)
+{
+    if (!File_Name_)
+    {
+        Close();
+        return false;
+    }
+
+    #if defined(WINDOWS)
+        //The text of a UTF-16 name gives this name back
+        return Open(Ztring().From_Unicode(File_Name_), Access);
+    #elif defined(ZENLIB_STANDARD)
+        Close();
+
+        //The name is given to the system as it is, File_Name is its text
+        File_Name=FileName_From_Native(File_Name_);
+
+        ZENLIB_DEBUG1(      "File Open",
+                            Debug+=", File_Name="; Debug +=Ztring(File_Name).To_UTF8();)
+
+        return Open_Stream(*this, File_Name_, Access);
+    #else
+        return Open(FileName_From_Native(File_Name_), Access);
+    #endif
+}
+
+//---------------------------------------------------------------------------
 bool File::Create (const Ztring &File_Name_, bool OverWrite)
 {
     Close();
@@ -474,7 +530,7 @@ bool File::Create (const Ztring &File_Name_, bool OverWrite)
 
             access=ios_base::binary|ios_base::in|ios_base::out|ios_base::trunc;
 
-            File_Handle=new fstream(FileName_To_Native(File_Name).c_str(), access);
+            File_Handle=(fstream*)new File_Stream(FileName_To_Native(File_Name), access);
             return ((fstream*)File_Handle)->is_open();
         #elif defined WINDOWS
             #ifdef WINDOWS_UWP
@@ -799,11 +855,11 @@ bool File::Truncate (int64u Offset)
                 #if !defined(__ANDROID_API__) || __ANDROID_API__ >= 21
                 if (Offset==(int64u)-1)
                     Offset=Position_Get();
-                Ztring File_Name_Sav=File_Name;
+                std::string Name=File_Stream_Name(File_Handle);
                 Close();
-                if (truncate(FileName_To_Native(File_Name_Sav).c_str(), Offset))
+                if (truncate(Name.c_str(), Offset))
                     return false;
-                if (!Open(File_Name_Sav, Access_Read_Write))
+                if (!Open_Stream(*this, Name, Access_Read_Write))
                     return false;
                 GoTo(0, FromEnd);
                 return true;
@@ -1077,14 +1133,14 @@ Ztring File::Created_Get()
         #ifdef ZENLIB_STANDARD
             #if defined(LINUX) && defined(LINUX_STATX)
                 struct statx Stat;
-                int Result=statx(AT_FDCWD, FileName_To_Native(File_Name).c_str(), AT_STATX_SYNC_AS_STAT, STATX_BTIME, &Stat);
+                int Result=statx(AT_FDCWD, File_Stream_Name(File_Handle), AT_STATX_SYNC_AS_STAT, STATX_BTIME, &Stat);
                 if (Result<0)
                     return __T(""); //Error
                 Ztring Time; Time.Date_From_Seconds_1970((int64s)Stat.stx_btime.tv_sec);
                 return Time;
             #elif defined MACOS || defined MACOSX
                 struct stat Stat;
-                int Result=stat(FileName_To_Native(File_Name).c_str(), &Stat);
+                int Result=stat(File_Stream_Name(File_Handle), &Stat);
                 if (Result<0)
                     return __T(""); //Error
                 Ztring Time; Time.Date_From_Seconds_1970((int64s)Stat.st_birthtime);
@@ -1162,14 +1218,14 @@ Ztring File::Created_Local_Get()
         #ifdef ZENLIB_STANDARD
             #if defined(LINUX) && defined(LINUX_STATX)
                 struct statx Stat;
-                int Result=statx(AT_FDCWD, FileName_To_Native(File_Name).c_str(), AT_STATX_SYNC_AS_STAT, STATX_BTIME, &Stat);
+                int Result=statx(AT_FDCWD, File_Stream_Name(File_Handle), AT_STATX_SYNC_AS_STAT, STATX_BTIME, &Stat);
                 if (Result<0)
                     return __T(""); //Error
                 Ztring Time; Time.Date_From_Seconds_1970_Local(Stat.stx_btime.tv_sec);
                 return Time;
             #elif defined MACOS || defined MACOSX
                 struct stat Stat;
-                int Result=stat(FileName_To_Native(File_Name).c_str(), &Stat);
+                int Result=stat(File_Stream_Name(File_Handle), &Stat);
                 if (Result<0)
                     return __T(""); //Error
                 Ztring Time; Time.Date_From_Seconds_1970_Local((int64s)Stat.st_birthtime);
@@ -1230,7 +1286,7 @@ Ztring File::Modified_Get()
     #else //ZENLIB_USEWX
         #ifdef ZENLIB_STANDARD
             struct stat Stat;
-            int Result=stat(FileName_To_Native(File_Name).c_str(), &Stat);
+            int Result=stat(File_Stream_Name(File_Handle), &Stat);
             if (Result<0)
                 return __T(""); //Error
             Ztring Time; Time.Date_From_Seconds_1970((int64s)Stat.st_mtime);
@@ -1292,7 +1348,7 @@ Ztring File::Modified_Local_Get()
     #else //ZENLIB_USEWX
         #ifdef ZENLIB_STANDARD
             struct stat Stat;
-            int Result=stat(FileName_To_Native(File_Name).c_str(), &Stat);
+            int Result=stat(File_Stream_Name(File_Handle), &Stat);
             if (Result<0)
                 return __T(""); //Error
             Ztring Time; Time.Date_From_Seconds_1970_Local(Stat.st_mtime);
